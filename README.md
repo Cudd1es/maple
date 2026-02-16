@@ -2,6 +2,13 @@
 
 Route traffic through a remote server to access geo-restricted websites and services.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Contributing
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.
+
+
 ## How It Works
 
 ```

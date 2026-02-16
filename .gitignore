@@ -1,2 +1,17 @@
+# System files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
 .maple_config
 proxy.pac
+*.log
+tmp/
