@@ -146,7 +146,7 @@ cmd_status() {
     # Check proxy connectivity
     echo ""
     echo -n "  Proxy:       "
-    if curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
+    if curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" 2>&1 | grep -q 'origin'; then
         echo -e "${GREEN}Connected${NC}"
     else
         echo -e "${RED}Unreachable${NC}"
@@ -201,9 +201,11 @@ cmd_test() {
         echo -e "${RED}FAIL${NC} - Is Squid running on the server?"
     fi
 
-    # Test HTTP through proxy
+    # Test HTTP through proxy (verify response content, not just HTTP status)
     echo -n "  HTTP via proxy:       "
-    if curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
+    local http_result
+    http_result=$(curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" 2>&1 || true)
+    if echo "$http_result" | grep -q 'origin'; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
