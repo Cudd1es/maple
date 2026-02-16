@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/.maple_config"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+usage() {
+    echo -e "${BOLD}maple${NC} - Route traffic through your Canada proxy"
+    echo ""
+    echo -e "${BOLD}Usage:${NC}"
+    echo "  maple on              Enable global mode (all traffic via Canada)"
+    echo "  maple off             Disable global mode (split routing only)"
+    echo "  maple add <domain>    Add domain to proxy list"
+    echo "  maple remove <domain> Remove domain from proxy list"
+    echo "  maple list            Show proxied domains"
+    echo "  maple status          Show current mode and connectivity"
+    echo "  maple test            Test proxy connectivity"
+    echo "  maple setup           Initial setup (configure server IP)"
+    echo "  maple help            Show this help"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo "  maple on              # Before an interview (Zoom/Teams)"
+    echo "  maple off             # After interview, back to split routing"
+    echo "  maple add netflix.com # Add a domain to split routing"
+}
+
+check_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "${RED}ERROR: Not configured. Run 'maple setup' first.${NC}"
+        exit 1
+    fi
+    source "$CONFIG_FILE"
+}
+
+cmd_on() {
+    check_config
+    bash "$SCRIPT_DIR/global_on.sh"
+}
+
+cmd_off() {
+    bash "$SCRIPT_DIR/global_off.sh"
+}
+
+cmd_add() {
+    local domain="$1"
+    local domains_file="$SCRIPT_DIR/domains.txt"
+
+    # Normalize: remove protocol prefix if present
+    domain=$(echo "$domain" | sed 's|https\?://||' | sed 's|/.*||')
+
+    # Check if already exists
+    if grep -qx "$domain" "$domains_file" 2>/dev/null; then
+        echo -e "${YELLOW}Domain '$domain' already in proxy list.${NC}"
+        return
+    fi
+
+    echo "$domain" >> "$domains_file"
+    echo -e "${GREEN}Added '$domain' to proxy list.${NC}"
+
+    # Regenerate PAC
+    check_config
+    bash "$SCRIPT_DIR/generate_pac.sh"
+}
+
+cmd_remove() {
+    local domain="$1"
+    local domains_file="$SCRIPT_DIR/domains.txt"
+
+    # Normalize
+    domain=$(echo "$domain" | sed 's|https\?://||' | sed 's|/.*||')
+
+    if ! grep -qx "$domain" "$domains_file" 2>/dev/null; then
+        echo -e "${YELLOW}Domain '$domain' not found in proxy list.${NC}"
+        return
+    fi
+
+    # Remove the domain line (escape dots for sed)
+    local escaped_domain
+    escaped_domain=$(echo "$domain" | sed 's/\./\\./g')
+    sed -i '' "/^${escaped_domain}$/d" "$domains_file"
+    echo -e "${GREEN}Removed '$domain' from proxy list.${NC}"
+
+    # Regenerate PAC
+    check_config
+    bash "$SCRIPT_DIR/generate_pac.sh"
+}
+
+cmd_list() {
+    local domains_file="$SCRIPT_DIR/domains.txt"
+    echo -e "${BLUE}=== Proxied Domains ===${NC}"
+    echo ""
+
+    local current_section=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^#\ ===\ (.+)\ ===$ ]]; then
+            current_section="${BASH_REMATCH[1]}"
+            echo -e "${BOLD}${current_section}${NC}"
+        elif [[ -n "$line" && ! "$line" =~ ^# ]]; then
+            echo "  $line"
+        fi
+    done < "$domains_file"
+
+    echo ""
+    local count
+    count=$(grep -v '^#' "$domains_file" | grep -v '^$' | wc -l | xargs)
+    echo -e "Total: ${GREEN}${count}${NC} domains"
+}
+
+cmd_status() {
+    check_config
+    echo -e "${BLUE}=== Maple Status ===${NC}"
+    echo ""
+
+    # Check Tailscale
+    if command -v tailscale &>/dev/null; then
+        local ts_status
+        ts_status=$(tailscale status 2>/dev/null || echo "")
+
+        # Check if using exit node
+        if echo "$ts_status" | grep -q "exit node"; then
+            echo -e "  Mode:        ${GREEN}GLOBAL${NC} (all traffic via Canada)"
+        else
+            echo -e "  Mode:        ${YELLOW}SPLIT${NC} (PAC routing only)"
+        fi
+
+        echo -e "  Tailscale:   ${GREEN}Connected${NC}"
+    else
+        echo -e "  Tailscale:   ${RED}Not installed${NC}"
+    fi
+
+    echo -e "  Server IP:   ${MAPLE_SERVER_IP}"
+    echo -e "  Proxy Port:  ${MAPLE_PROXY_PORT:-3128}"
+
+    # Check proxy connectivity
+    echo ""
+    echo -n "  Proxy:       "
+    if curl -s --connect-timeout 3 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://www.google.com" > /dev/null 2>&1; then
+        echo -e "${GREEN}Connected${NC}"
+    else
+        echo -e "${RED}Unreachable${NC}"
+    fi
+
+    # Domain count
+    local count
+    count=$(grep -v '^#' "$SCRIPT_DIR/domains.txt" | grep -v '^$' | wc -l | xargs)
+    echo -e "  Domains:     ${count} configured"
+}
+
+cmd_test() {
+    check_config
+    echo -e "${BLUE}=== Connectivity Test ===${NC}"
+    echo ""
+
+    # Test Tailscale connection
+    echo -n "  Tailscale to server:  "
+    if ping -c 1 -W 3 "$MAPLE_SERVER_IP" > /dev/null 2>&1; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC} - Check Tailscale connection"
+    fi
+
+    # Test proxy port
+    echo -n "  Squid proxy (3128):   "
+    if nc -z -w 3 "$MAPLE_SERVER_IP" "${MAPLE_PROXY_PORT:-3128}" 2>/dev/null; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC} - Is Squid running on the server?"
+    fi
+
+    # Test HTTP through proxy
+    echo -n "  HTTP via proxy:       "
+    if curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC}"
+    fi
+
+    # Test HTTPS through proxy
+    echo -n "  HTTPS via proxy:      "
+    local result
+    result=$(curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://www.google.com" 2>&1 || true)
+    if echo "$result" | grep -qi "google"; then
+        echo -e "${GREEN}OK${NC}"
+    else
+        echo -e "${RED}FAIL${NC}"
+    fi
+
+    # Show proxy IP
+    echo ""
+    echo -n "  Your proxy exit IP:   "
+    local ip
+    ip=$(curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://ipinfo.io/ip" 2>&1 || echo "unknown")
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${GREEN}${ip}${NC} (should be a Canadian IP)"
+    else
+        echo -e "${RED}Could not determine${NC}"
+    fi
+}
+
+cmd_setup() {
+    bash "$SCRIPT_DIR/setup.sh"
+}
+
+# Main
+case "${1:-help}" in
+    on)      cmd_on ;;
+    off)     cmd_off ;;
+    add)
+        [[ -z "${2:-}" ]] && { echo -e "${RED}Usage: maple add <domain>${NC}"; exit 1; }
+        cmd_add "$2"
+        ;;
+    remove|rm)
+        [[ -z "${2:-}" ]] && { echo -e "${RED}Usage: maple remove <domain>${NC}"; exit 1; }
+        cmd_remove "$2"
+        ;;
+    list|ls) cmd_list ;;
+    status)  cmd_status ;;
+    test)    cmd_test ;;
+    setup)   cmd_setup ;;
+    help|-h|--help) usage ;;
+    *)
+        echo -e "${RED}Unknown command: $1${NC}"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac
