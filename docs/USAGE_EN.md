@@ -1,6 +1,6 @@
 # Maple User Guide
 
-Maple routes your internet traffic through a remote server using [Tailscale](https://tailscale.com) and [Squid](http://www.squid-cache.org/) proxy. It provides two routing modes and a simple CLI to manage everything.
+Maple routes your internet traffic through a remote server using [Tailscale](https://tailscale.com) and [Squid](http://www.squid-cache.org/) proxy. It provides three routing modes and a simple CLI to manage everything.
 
 ## Architecture
 
@@ -11,8 +11,9 @@ Client  ----Tailscale----->  Server  ----->  Internet
   |-- Global mode              |-- Tailscale Exit Node
 ```
 
-- **Split mode** (default): Only configured domains route through the server (browser only via PAC file)
 - **Global mode**: All traffic from all apps routes through the server (uses Tailscale exit node)
+- **Split mode** (default): Only configured domains route through the server (browser only via PAC file)
+- **Off**: All proxying disabled, direct connection restored
 
 ## Prerequisites
 
@@ -70,8 +71,9 @@ This will:
 
 | Command | Description |
 |---------|-------------|
-| `maple on` | Enable global mode (all traffic via server) |
-| `maple off` | Disable global mode (back to split routing) |
+| `maple global` | Enable global mode (all traffic via server) |
+| `maple split` | Enable split mode (only domains.txt via server) |
+| `maple off` | Disable all proxying (exit node off + PAC off, direct connection) |
 
 ### Domain Management
 
@@ -93,10 +95,11 @@ This will:
 | Scenario | Mode | Action |
 |----------|------|--------|
 | Browsing proxied domains (Google, YouTube, etc.) | Split (default) | No action needed |
-| Video call (Zoom/Teams/Meet) | Global | `maple on` before the call |
-| Using external APIs (OpenAI, etc.) | Global | `maple on` |
+| Video call (Zoom/Teams/Meet) | Global | `maple global` before the call |
+| Using external APIs (OpenAI, etc.) | Global | `maple global` |
 | Coding test (HackerRank, CoderPad) | Split (default) | No action needed |
-| Done with call/interview | Split | `maple off` |
+| Done with call/interview | Split | `maple split` |
+| No proxy needed at all | Off | `maple off` |
 
 ## Domain Management
 
@@ -171,3 +174,7 @@ Shows mode, connectivity, latency, and domain count at a glance. The latency val
 **Global mode not working:**
 - Ensure exit node is approved in [Tailscale admin console](https://login.tailscale.com/admin/machines)
 - Run `maple test` to check connectivity
+
+**Still proxied after turning off:**
+- Run `maple status` to confirm mode is OFF
+- Check if your browser has its own proxy settings

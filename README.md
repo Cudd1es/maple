@@ -18,9 +18,10 @@ Client  ----Tailscale----->  Server  ----->  Internet
   |-- Global mode              |-- Tailscale Exit Node
 ```
 
-**Two modes:**
-- **Split mode** (default): Only configured domains go through the server (browser only)
+**Three modes:**
 - **Global mode**: All traffic goes through the server (for Zoom/Teams/API calls)
+- **Split mode** (default): Only configured domains go through the server (browser only)
+- **Off**: All proxying disabled, direct connection restored
 
 ## Quick Start
 
@@ -48,8 +49,9 @@ maple test                # Run full connectivity test
 maple ping                # Measure latency to server
 maple speed               # Measure download speed via proxy
 
-maple on                  # Enable global mode
-maple off                 # Disable global mode
+maple global              # Enable global mode (all traffic via server)
+maple split               # Enable split mode (domains.txt only)
+maple off                 # Disable all proxying
 
 maple list                # View proxied domains
 maple add example.com     # Add a domain

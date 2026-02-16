@@ -16,8 +16,9 @@ usage() {
     echo -e "${BOLD}maple${NC} - Route traffic through your remote proxy server"
     echo ""
     echo -e "${BOLD}Usage:${NC}"
-    echo "  maple on              Enable global mode (all traffic via server)"
-    echo "  maple off             Disable global mode (split routing only)"
+    echo "  maple global          Enable global mode (all traffic via server)"
+    echo "  maple split           Enable split mode (only domains.txt via server)"
+    echo "  maple off             Disable all proxying (restore direct connection)"
     echo "  maple add <domain>    Add domain to proxy list"
     echo "  maple remove <domain> Remove domain from proxy list"
     echo "  maple list            Show proxied domains"
@@ -29,8 +30,9 @@ usage() {
     echo "  maple help            Show this help"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
-    echo "  maple on              # Before an interview (Zoom/Teams)"
-    echo "  maple off             # After interview, back to split routing"
+    echo "  maple global          # Before an interview (Zoom/Teams)"
+    echo "  maple split           # After interview, back to split routing"
+    echo "  maple off             # Disable all proxying"
     echo "  maple add netflix.com # Add a domain to split routing"
     echo "  maple ping            # Check latency to server"
     echo "  maple speed           # Measure connection speed"
@@ -44,13 +46,59 @@ check_config() {
     source "$CONFIG_FILE"
 }
 
-cmd_on() {
+# Detect the active network service for proxy configuration
+get_active_service() {
+    local service
+    while IFS= read -r service; do
+        [[ "$service" == "*"* ]] && continue
+        [[ -z "$service" ]] && continue
+        if networksetup -getinfo "$service" 2>/dev/null | grep -q "IP address: [0-9]"; then
+            echo "$service"
+            return
+        fi
+    done < <(networksetup -listallnetworkservices)
+}
+
+cmd_global() {
     check_config
     bash "$SCRIPT_DIR/global_on.sh"
 }
 
+cmd_split() {
+    check_config
+
+    # Disable exit node
+    echo "Switching to split mode..."
+    sudo tailscale set --exit-node=
+
+    # Ensure PAC auto-proxy is enabled
+    local active_service
+    active_service=$(get_active_service)
+    if [[ -n "${active_service:-}" ]]; then
+        networksetup -setautoproxyurl "$active_service" "file://$SCRIPT_DIR/proxy.pac"
+        networksetup -setautoproxystate "$active_service" on
+        echo -e "${GREEN}Split mode ON.${NC} Only domains.txt traffic goes through server."
+    else
+        echo -e "${YELLOW}WARNING: Could not detect active network service.${NC}"
+        echo "Set auto-proxy URL manually: file://$SCRIPT_DIR/proxy.pac"
+    fi
+}
+
 cmd_off() {
-    bash "$SCRIPT_DIR/global_off.sh"
+    # Disable exit node
+    echo "Disabling all proxying..."
+    sudo tailscale set --exit-node=
+
+    # Disable PAC auto-proxy
+    local active_service
+    active_service=$(get_active_service)
+    if [[ -n "${active_service:-}" ]]; then
+        networksetup -setautoproxystate "$active_service" off
+        echo -e "${GREEN}Proxy OFF.${NC} All traffic is now direct."
+    else
+        echo -e "${YELLOW}WARNING: Could not detect active network service.${NC}"
+        echo "Disable auto-proxy manually in System Settings > Network > Proxies."
+    fi
 }
 
 cmd_add() {
@@ -123,20 +171,38 @@ cmd_status() {
     echo -e "${BLUE}=== Maple Status ===${NC}"
     echo ""
 
-    # Check Tailscale
+    # Determine mode: GLOBAL / SPLIT / OFF
+    local mode="OFF"
+    local mode_color="$RED"
+    local mode_desc="all traffic direct"
+
     if command -v tailscale &>/dev/null; then
         local ts_status
         ts_status=$(tailscale status 2>/dev/null || echo "")
 
-        # Check if using exit node
         if echo "$ts_status" | grep -q "exit node"; then
-            echo -e "  Mode:        ${GREEN}GLOBAL${NC} (all traffic via server)"
+            mode="GLOBAL"
+            mode_color="$GREEN"
+            mode_desc="all traffic via server"
         else
-            echo -e "  Mode:        ${YELLOW}SPLIT${NC} (PAC routing only)"
+            # Check if PAC auto-proxy is enabled
+            local active_service
+            active_service=$(get_active_service)
+            local pac_enabled="off"
+            if [[ -n "${active_service:-}" ]]; then
+                pac_enabled=$(networksetup -getautoproxyurl "$active_service" 2>/dev/null | grep -i 'enabled' | awk '{print $2}' || echo "off")
+            fi
+            if [[ "$pac_enabled" == "yes" || "$pac_enabled" == "Yes" ]]; then
+                mode="SPLIT"
+                mode_color="$YELLOW"
+                mode_desc="domains.txt traffic via server"
+            fi
         fi
 
+        echo -e "  Mode:        ${mode_color}${mode}${NC} (${mode_desc})"
         echo -e "  Tailscale:   ${GREEN}Connected${NC}"
     else
+        echo -e "  Mode:        ${RED}OFF${NC} (Tailscale not installed)"
         echo -e "  Tailscale:   ${RED}Not installed${NC}"
     fi
 
@@ -157,10 +223,8 @@ cmd_status() {
     local ping_result
     ping_result=$(ping -c 1 -W 3 "$MAPLE_SERVER_IP" 2>/dev/null || true)
     local avg_ms
-    # Extract min/avg/max/stddev numbers, take avg (2nd field)
     avg_ms=$(echo "$ping_result" | grep -oE '[0-9]+\.[0-9]+/[0-9]+\.[0-9]+/[0-9]+\.[0-9]+/[0-9]+\.[0-9]+' | cut -d'/' -f2)
     if [[ -n "${avg_ms:-}" ]]; then
-        # Color-code by latency quality
         local ms_int="${avg_ms%%.*}"
         ms_int="${ms_int:-0}"
         if [[ "$ms_int" -lt 100 ]]; then
@@ -336,7 +400,8 @@ cmd_setup() {
 
 # Main
 case "${1:-help}" in
-    on)      cmd_on ;;
+    global)  cmd_global ;;
+    split)   cmd_split ;;
     off)     cmd_off ;;
     add)
         [[ -z "${2:-}" ]] && { echo -e "${RED}Usage: maple add <domain>${NC}"; exit 1; }

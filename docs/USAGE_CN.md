@@ -1,6 +1,6 @@
 # Maple 使用指南
 
-Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squid-cache.org/) 代理，将你的网络流量转发到远程服务器。提供两种路由模式和简单的命令行工具。
+Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squid-cache.org/) 代理，将你的网络流量转发到远程服务器。提供三种路由模式和简单的命令行工具。
 
 ## 架构
 
@@ -11,8 +11,9 @@ Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squ
   |-- 全局模式（所有应用）      |-- Tailscale Exit Node
 ```
 
-- **分流模式**（默认）：只有配置的域名通过服务端转发（仅浏览器，PAC 文件控制）
-- **全局模式**：所有应用的所有流量通过服务端转发（使用 Tailscale 出口节点）
+- **全局模式**（global）：所有应用的所有流量通过服务端转发（使用 Tailscale 出口节点）
+- **分流模式**（split，默认）：只有 domains.txt 配置的域名通过服务端转发（仅浏览器，PAC 文件控制）
+- **关闭**（off）：禁用所有代理，所有流量直连
 
 ## 前置要求
 
@@ -70,8 +71,9 @@ Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squ
 
 | 命令 | 说明 |
 |------|------|
-| `maple on` | 开启全局模式（所有流量走服务端） |
-| `maple off` | 关闭全局模式（恢复分流） |
+| `maple global` | 开启全局模式（所有流量走服务端） |
+| `maple split` | 开启分流模式（只有 domains.txt 走代理） |
+| `maple off` | 关闭代理（禁用 exit node + 禁用 PAC，所有流量直连） |
 
 ### 域名管理
 
@@ -92,11 +94,12 @@ Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squ
 
 | 场景 | 模式 | 操作 |
 |------|------|------|
-| 浏览代理域名（Google、YouTube 等） | 分流（默认） | 无需操作 |
-| 视频会议（Zoom/Teams/Meet） | 全局 | 会前运行 `maple on` |
-| 使用外部 API（OpenAI 等） | 全局 | `maple on` |
-| 在线笔试（HackerRank、CoderPad） | 分流（默认） | 无需操作 |
-| 会议/面试结束 | 分流 | `maple off` |
+| 浏览代理域名（Google、YouTube 等） | split（默认） | 无需操作 |
+| 视频会议（Zoom/Teams/Meet） | global | 会前运行 `maple global` |
+| 使用外部 API（OpenAI 等） | global | `maple global` |
+| 在线笔试（HackerRank、CoderPad） | split（默认） | 无需操作 |
+| 会议/面试结束 | split | `maple split` |
+| 完全不需要代理 | off | `maple off` |
 
 ## 域名管理
 
@@ -171,3 +174,7 @@ maple status
 **全局模式不工作：**
 - 确认出口节点已在 [Tailscale 管理后台](https://login.tailscale.com/admin/machines) 批准
 - 运行 `maple test` 检查连通性
+
+**关闭模式后仍有代理：**
+- 运行 `maple status` 确认模式为 OFF
+- 检查浏览器是否有独立的代理设置
