@@ -11,7 +11,7 @@ if [[ -z "${MAPLE_SERVER_IP:-}" ]]; then
     exit 1
 fi
 
-echo "Enabling global mode (all traffic via Canada)..."
+echo "Enabling global mode (all traffic via server)..."
 sudo tailscale set --exit-node="$MAPLE_SERVER_IP"
-echo "Global mode ON. All traffic now routes through Canada."
+echo "Global mode ON. All traffic now routes through server."
 echo "Run 'maple off' to disable."

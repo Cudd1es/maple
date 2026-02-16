@@ -13,16 +13,18 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 usage() {
-    echo -e "${BOLD}maple${NC} - Route traffic through your Canada proxy"
+    echo -e "${BOLD}maple${NC} - Route traffic through your remote proxy server"
     echo ""
     echo -e "${BOLD}Usage:${NC}"
-    echo "  maple on              Enable global mode (all traffic via Canada)"
+    echo "  maple on              Enable global mode (all traffic via server)"
     echo "  maple off             Disable global mode (split routing only)"
     echo "  maple add <domain>    Add domain to proxy list"
     echo "  maple remove <domain> Remove domain from proxy list"
     echo "  maple list            Show proxied domains"
     echo "  maple status          Show current mode and connectivity"
     echo "  maple test            Test proxy connectivity"
+    echo "  maple ping            Measure latency to server"
+    echo "  maple speed           Measure download speed via proxy"
     echo "  maple setup           Initial setup (configure server IP)"
     echo "  maple help            Show this help"
     echo ""
@@ -30,6 +32,8 @@ usage() {
     echo "  maple on              # Before an interview (Zoom/Teams)"
     echo "  maple off             # After interview, back to split routing"
     echo "  maple add netflix.com # Add a domain to split routing"
+    echo "  maple ping            # Check latency to server"
+    echo "  maple speed           # Measure connection speed"
 }
 
 check_config() {
@@ -126,7 +130,7 @@ cmd_status() {
 
         # Check if using exit node
         if echo "$ts_status" | grep -q "exit node"; then
-            echo -e "  Mode:        ${GREEN}GLOBAL${NC} (all traffic via Canada)"
+            echo -e "  Mode:        ${GREEN}GLOBAL${NC} (all traffic via server)"
         else
             echo -e "  Mode:        ${YELLOW}SPLIT${NC} (PAC routing only)"
         fi
@@ -144,6 +148,28 @@ cmd_status() {
     echo -n "  Proxy:       "
     if curl -s --connect-timeout 3 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://www.google.com" > /dev/null 2>&1; then
         echo -e "${GREEN}Connected${NC}"
+    else
+        echo -e "${RED}Unreachable${NC}"
+    fi
+
+    # Latency (quick single ping)
+    echo -n "  Latency:     "
+    local ping_result
+    ping_result=$(ping -c 1 -W 3 "$MAPLE_SERVER_IP" 2>/dev/null || true)
+    local avg_ms
+    # Extract min/avg/max/stddev numbers, take avg (2nd field)
+    avg_ms=$(echo "$ping_result" | grep -oE '[0-9]+\.[0-9]+/[0-9]+\.[0-9]+/[0-9]+\.[0-9]+/[0-9]+\.[0-9]+' | cut -d'/' -f2)
+    if [[ -n "${avg_ms:-}" ]]; then
+        # Color-code by latency quality
+        local ms_int="${avg_ms%%.*}"
+        ms_int="${ms_int:-0}"
+        if [[ "$ms_int" -lt 100 ]]; then
+            echo -e "${GREEN}${avg_ms} ms${NC}"
+        elif [[ "$ms_int" -lt 250 ]]; then
+            echo -e "${YELLOW}${avg_ms} ms${NC}"
+        else
+            echo -e "${RED}${avg_ms} ms${NC}"
+        fi
     else
         echo -e "${RED}Unreachable${NC}"
     fi
@@ -186,8 +212,8 @@ cmd_test() {
     # Test HTTPS through proxy
     echo -n "  HTTPS via proxy:      "
     local result
-    result=$(curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://www.google.com" 2>&1 || true)
-    if echo "$result" | grep -qi "google"; then
+    result=$(curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://www.google.com" 2>&1 || true)
+    if echo "$result" | grep -qi "google\|html\|doctype"; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
@@ -197,11 +223,122 @@ cmd_test() {
     echo ""
     echo -n "  Your proxy exit IP:   "
     local ip
-    ip=$(curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://ipinfo.io/ip" 2>&1 || echo "unknown")
+    ip=$(curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://ipinfo.io/ip" 2>&1 || echo "unknown")
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${GREEN}${ip}${NC} (should be a Canadian IP)"
+        echo -e "${GREEN}${ip}${NC} (server's public IP)"
     else
         echo -e "${RED}Could not determine${NC}"
+    fi
+}
+
+cmd_ping() {
+    check_config
+    echo -e "${BLUE}=== Latency Test ===${NC}"
+    echo ""
+
+    # Tailscale ping (measures DERP relay vs direct connection)
+    echo -e "${BOLD}Tailscale Ping:${NC}"
+    if command -v tailscale &>/dev/null; then
+        tailscale ping --c 3 "$MAPLE_SERVER_IP" 2>/dev/null || echo -e "  ${RED}Could not reach server via Tailscale${NC}"
+    else
+        echo -e "  ${RED}Tailscale not installed${NC}"
+    fi
+
+    # ICMP ping
+    echo ""
+    echo -e "${BOLD}ICMP Ping (5 packets):${NC}"
+    local ping_output
+    ping_output=$(ping -c 5 -W 3 "$MAPLE_SERVER_IP" 2>&1 || true)
+
+    # Show individual pings
+    echo "$ping_output" | grep -E 'bytes from|icmp_seq' | while IFS= read -r line; do
+        echo "  $line"
+    done
+
+    # Show summary
+    echo ""
+    local stats_line
+    stats_line=$(echo "$ping_output" | grep 'packet loss')
+    local rtt_line
+    rtt_line=$(echo "$ping_output" | grep 'avg')
+
+    if [[ -n "$stats_line" ]]; then
+        echo -e "  ${BOLD}Stats:${NC} $stats_line"
+    fi
+    if [[ -n "$rtt_line" ]]; then
+        echo -e "  ${BOLD}RTT:${NC}   $rtt_line"
+    fi
+
+    if echo "$stats_line" | grep -q '100.0% packet loss'; then
+        echo -e "\n  ${RED}Server is unreachable. Check Tailscale connection.${NC}"
+    fi
+}
+
+cmd_speed() {
+    check_config
+    echo -e "${BLUE}=== Speed Test ===${NC}"
+    echo ""
+
+    local proxy="http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}"
+
+    # Test download speed using Cloudflare speed test endpoints
+    echo -e "${BOLD}Download Speed (via proxy):${NC}"
+    echo ""
+
+    # 1MB test
+    echo -n "  1 MB file:    "
+    local speed_1m
+    speed_1m=$(curl -s --connect-timeout 10 --max-time 30 \
+        --proxy "$proxy" \
+        -o /dev/null -w '%{speed_download} %{time_total}' \
+        "https://speed.cloudflare.com/__down?bytes=1000000" 2>/dev/null || echo "0 0")
+    local bps_1m time_1m
+    bps_1m=$(echo "$speed_1m" | awk '{print $1}')
+    time_1m=$(echo "$speed_1m" | awk '{print $2}')
+    if [[ "$bps_1m" != "0" ]] && [[ -n "$bps_1m" ]]; then
+        local mbps_1m
+        mbps_1m=$(echo "$bps_1m" | awk '{printf "%.2f", $1 * 8 / 1000000}')
+        echo -e "${GREEN}${mbps_1m} Mbps${NC} (${time_1m}s)"
+    else
+        echo -e "${RED}Failed${NC}"
+    fi
+
+    # 10MB test
+    echo -n "  10 MB file:   "
+    local speed_10m
+    speed_10m=$(curl -s --connect-timeout 10 --max-time 60 \
+        --proxy "$proxy" \
+        -o /dev/null -w '%{speed_download} %{time_total}' \
+        "https://speed.cloudflare.com/__down?bytes=10000000" 2>/dev/null || echo "0 0")
+    local bps_10m time_10m
+    bps_10m=$(echo "$speed_10m" | awk '{print $1}')
+    time_10m=$(echo "$speed_10m" | awk '{print $2}')
+    if [[ "$bps_10m" != "0" ]] && [[ -n "$bps_10m" ]]; then
+        local mbps_10m
+        mbps_10m=$(echo "$bps_10m" | awk '{printf "%.2f", $1 * 8 / 1000000}')
+        echo -e "${GREEN}${mbps_10m} Mbps${NC} (${time_10m}s)"
+    else
+        echo -e "${RED}Failed${NC}"
+    fi
+
+    # Compare with direct speed (no proxy)
+    echo ""
+    echo -e "${BOLD}Direct Download (no proxy):${NC}"
+    echo ""
+    echo -n "  1 MB file:    "
+    local speed_direct
+    speed_direct=$(curl -s --connect-timeout 10 --max-time 30 \
+        -o /dev/null -w '%{speed_download} %{time_total}' \
+        "https://speed.cloudflare.com/__down?bytes=1000000" 2>/dev/null || echo "0 0")
+    local bps_direct time_direct
+    bps_direct=$(echo "$speed_direct" | awk '{print $1}')
+    time_direct=$(echo "$speed_direct" | awk '{print $2}')
+    if [[ "$bps_direct" != "0" ]] && [[ -n "$bps_direct" ]]; then
+        local mbps_direct
+        mbps_direct=$(echo "$bps_direct" | awk '{printf "%.2f", $1 * 8 / 1000000}')
+        echo -e "${GREEN}${mbps_direct} Mbps${NC} (${time_direct}s)"
+    else
+        echo -e "${RED}Failed${NC}"
     fi
 }
 
@@ -224,6 +361,8 @@ case "${1:-help}" in
     list|ls) cmd_list ;;
     status)  cmd_status ;;
     test)    cmd_test ;;
+    ping)    cmd_ping ;;
+    speed)   cmd_speed ;;
     setup)   cmd_setup ;;
     help|-h|--help) usage ;;
     *)

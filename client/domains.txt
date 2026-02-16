@@ -39,6 +39,15 @@ instagram.com
 facebook.com
 reddit.com
 discord.com
+discord.gg
+discordapp.com
+
+# === Gaming ===
+store.steampowered.com
+steampowered.com
+steamcommunity.com
+steamstatic.com
+steamcdn-a.akamaihd.net
 
 # === Development ===
 github.com

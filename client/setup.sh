@@ -23,7 +23,7 @@ echo "Your Tailscale IP: $TAILSCALE_IP"
 echo ""
 
 # Get server Tailscale IP
-read -rp "Enter the Tailscale IP of your Canada Mac: " SERVER_IP
+read -rp "Enter the Tailscale IP of your server: " SERVER_IP
 
 # Validate IP format
 if ! echo "$SERVER_IP" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
