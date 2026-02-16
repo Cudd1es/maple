@@ -146,7 +146,7 @@ cmd_status() {
     # Check proxy connectivity
     echo ""
     echo -n "  Proxy:       "
-    if curl -s --connect-timeout 3 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://www.google.com" > /dev/null 2>&1; then
+    if curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
         echo -e "${GREEN}Connected${NC}"
     else
         echo -e "${RED}Unreachable${NC}"
@@ -203,27 +203,34 @@ cmd_test() {
 
     # Test HTTP through proxy
     echo -n "  HTTP via proxy:       "
-    if curl -s --connect-timeout 5 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
+    if curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://httpbin.org/ip" > /dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
     fi
 
-    # Test HTTPS through proxy
+    # Test HTTPS through proxy (CONNECT tunneling)
     echo -n "  HTTPS via proxy:      "
-    local result
-    result=$(curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://www.google.com" 2>&1 || true)
-    if echo "$result" | grep -qi "google\|html\|doctype"; then
+    local https_result
+    https_result=$(curl -s --connect-timeout 15 --max-time 30 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://httpbin.org/ip" 2>&1 || true)
+    if echo "$https_result" | grep -q 'origin'; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"
+        # Show error detail for debugging
+        local curl_err
+        curl_err=$(curl -v --connect-timeout 15 --max-time 30 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "https://httpbin.org/ip" 2>&1 | head -20 || true)
+        echo -e "  ${YELLOW}Debug info:${NC}"
+        echo "$curl_err" | grep -iE 'error|refused|denied|timeout|connect|HTTP/' | head -5 | while IFS= read -r line; do
+            echo "    $line"
+        done || true
     fi
 
     # Show proxy IP
     echo ""
     echo -n "  Your proxy exit IP:   "
     local ip
-    ip=$(curl -s --connect-timeout 10 --max-time 15 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://ipinfo.io/ip" 2>&1 || echo "unknown")
+    ip=$(curl -s --connect-timeout 10 --max-time 20 --proxy "http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}" "http://ipinfo.io/ip" 2>&1 || echo "unknown")
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo -e "${GREEN}${ip}${NC} (server's public IP)"
     else
@@ -248,29 +255,56 @@ cmd_ping() {
     echo ""
     echo -e "${BOLD}ICMP Ping (5 packets):${NC}"
     local ping_output
-    ping_output=$(ping -c 5 -W 3 "$MAPLE_SERVER_IP" 2>&1 || true)
+    ping_output=$(ping -c 5 -t 10 "$MAPLE_SERVER_IP" 2>&1 || true)
 
-    # Show individual pings
+    # Show individual pings (|| true prevents pipefail exit when grep has no matches)
     echo "$ping_output" | grep -E 'bytes from|icmp_seq' | while IFS= read -r line; do
         echo "  $line"
-    done
+    done || true
 
     # Show summary
     echo ""
     local stats_line
-    stats_line=$(echo "$ping_output" | grep 'packet loss')
+    stats_line=$(echo "$ping_output" | grep 'packet loss' || true)
     local rtt_line
-    rtt_line=$(echo "$ping_output" | grep 'avg')
+    rtt_line=$(echo "$ping_output" | grep 'avg' || true)
 
-    if [[ -n "$stats_line" ]]; then
+    if [[ -n "${stats_line:-}" ]]; then
         echo -e "  ${BOLD}Stats:${NC} $stats_line"
     fi
-    if [[ -n "$rtt_line" ]]; then
+    if [[ -n "${rtt_line:-}" ]]; then
         echo -e "  ${BOLD}RTT:${NC}   $rtt_line"
     fi
 
-    if echo "$stats_line" | grep -q '100.0% packet loss'; then
+    if echo "${stats_line:-}" | grep -q '100.0% packet loss' 2>/dev/null; then
         echo -e "\n  ${RED}Server is unreachable. Check Tailscale connection.${NC}"
+    fi
+}
+
+# Helper: run a single download speed test and print result
+_speed_test() {
+    local label="$1"
+    local url="$2"
+    local proxy_arg="${3:-}"
+    local timeout="${4:-30}"
+
+    echo -n "  $label"
+    local curl_args=(curl -s --connect-timeout 15 --max-time "$timeout" -o /dev/null -w '%{speed_download} %{time_total}')
+    [[ -n "$proxy_arg" ]] && curl_args+=(--proxy "$proxy_arg")
+    curl_args+=("$url")
+
+    local result
+    result=$("${curl_args[@]}" 2>/dev/null || echo "0 0")
+    local bps time_s
+    bps=$(echo "$result" | awk '{print $1}')
+    time_s=$(echo "$result" | awk '{print $2}')
+
+    if [[ -n "${bps:-}" ]] && [[ "$bps" != "0" ]] && [[ "$bps" != "0.000" ]]; then
+        local mbps
+        mbps=$(echo "$bps" | awk '{printf "%.2f", $1 * 8 / 1000000}')
+        echo -e "${GREEN}${mbps} Mbps${NC} (${time_s}s)"
+    else
+        echo -e "${RED}Failed${NC}"
     fi
 }
 
@@ -281,65 +315,17 @@ cmd_speed() {
 
     local proxy="http://${MAPLE_SERVER_IP}:${MAPLE_PROXY_PORT:-3128}"
 
-    # Test download speed using Cloudflare speed test endpoints
+    # Use HTTP endpoints to avoid HTTPS tunneling issues
     echo -e "${BOLD}Download Speed (via proxy):${NC}"
     echo ""
+    _speed_test "HTTP  1 MB:   " "http://ipv4.download.thinkbroadband.com/1MB.zip" "$proxy" 30
+    _speed_test "HTTP 10 MB:   " "http://ipv4.download.thinkbroadband.com/10MB.zip" "$proxy" 60
+    _speed_test "HTTPS 1 MB:   " "https://speed.cloudflare.com/__down?bytes=1000000" "$proxy" 30
 
-    # 1MB test
-    echo -n "  1 MB file:    "
-    local speed_1m
-    speed_1m=$(curl -s --connect-timeout 10 --max-time 30 \
-        --proxy "$proxy" \
-        -o /dev/null -w '%{speed_download} %{time_total}' \
-        "https://speed.cloudflare.com/__down?bytes=1000000" 2>/dev/null || echo "0 0")
-    local bps_1m time_1m
-    bps_1m=$(echo "$speed_1m" | awk '{print $1}')
-    time_1m=$(echo "$speed_1m" | awk '{print $2}')
-    if [[ "$bps_1m" != "0" ]] && [[ -n "$bps_1m" ]]; then
-        local mbps_1m
-        mbps_1m=$(echo "$bps_1m" | awk '{printf "%.2f", $1 * 8 / 1000000}')
-        echo -e "${GREEN}${mbps_1m} Mbps${NC} (${time_1m}s)"
-    else
-        echo -e "${RED}Failed${NC}"
-    fi
-
-    # 10MB test
-    echo -n "  10 MB file:   "
-    local speed_10m
-    speed_10m=$(curl -s --connect-timeout 10 --max-time 60 \
-        --proxy "$proxy" \
-        -o /dev/null -w '%{speed_download} %{time_total}' \
-        "https://speed.cloudflare.com/__down?bytes=10000000" 2>/dev/null || echo "0 0")
-    local bps_10m time_10m
-    bps_10m=$(echo "$speed_10m" | awk '{print $1}')
-    time_10m=$(echo "$speed_10m" | awk '{print $2}')
-    if [[ "$bps_10m" != "0" ]] && [[ -n "$bps_10m" ]]; then
-        local mbps_10m
-        mbps_10m=$(echo "$bps_10m" | awk '{printf "%.2f", $1 * 8 / 1000000}')
-        echo -e "${GREEN}${mbps_10m} Mbps${NC} (${time_10m}s)"
-    else
-        echo -e "${RED}Failed${NC}"
-    fi
-
-    # Compare with direct speed (no proxy)
     echo ""
     echo -e "${BOLD}Direct Download (no proxy):${NC}"
     echo ""
-    echo -n "  1 MB file:    "
-    local speed_direct
-    speed_direct=$(curl -s --connect-timeout 10 --max-time 30 \
-        -o /dev/null -w '%{speed_download} %{time_total}' \
-        "https://speed.cloudflare.com/__down?bytes=1000000" 2>/dev/null || echo "0 0")
-    local bps_direct time_direct
-    bps_direct=$(echo "$speed_direct" | awk '{print $1}')
-    time_direct=$(echo "$speed_direct" | awk '{print $2}')
-    if [[ "$bps_direct" != "0" ]] && [[ -n "$bps_direct" ]]; then
-        local mbps_direct
-        mbps_direct=$(echo "$bps_direct" | awk '{printf "%.2f", $1 * 8 / 1000000}')
-        echo -e "${GREEN}${mbps_direct} Mbps${NC} (${time_direct}s)"
-    else
-        echo -e "${RED}Failed${NC}"
-    fi
+    _speed_test "HTTP  1 MB:   " "http://ipv4.download.thinkbroadband.com/1MB.zip" "" 30
 }
 
 cmd_setup() {
