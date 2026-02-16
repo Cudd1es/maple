@@ -28,12 +28,11 @@ echo "Tailscale IP: $TAILSCALE_IP"
 echo "Installing Squid..."
 brew install squid
 
+# Determine Squid config directory via Homebrew prefix
+SQUID_CONF_DIR="$(brew --prefix)/etc/squid"
+mkdir -p "$SQUID_CONF_DIR"
+
 # Backup original config
-SQUID_CONF_DIR="/usr/local/etc/squid"
-# On Apple Silicon Macs, Homebrew uses /opt/homebrew
-if [[ -d "/opt/homebrew/etc/squid" ]]; then
-    SQUID_CONF_DIR="/opt/homebrew/etc/squid"
-fi
 
 if [[ -f "$SQUID_CONF_DIR/squid.conf" ]]; then
     cp "$SQUID_CONF_DIR/squid.conf" "$SQUID_CONF_DIR/squid.conf.backup.$(date +%Y%m%d%H%M%S)"
@@ -45,16 +44,15 @@ cp "$SCRIPT_DIR/squid.conf" "$SQUID_CONF_DIR/squid.conf"
 echo "Config installed to $SQUID_CONF_DIR/squid.conf"
 
 # Create log directory
-LOG_DIR="/usr/local/var/log/squid"
-if [[ -d "/opt/homebrew/var" ]]; then
-    LOG_DIR="/opt/homebrew/var/log/squid"
-    # Update log paths in squid.conf for Apple Silicon
+LOG_DIR="$(brew --prefix)/var/log/squid"
+if [[ "$LOG_DIR" != "/usr/local/var/log/squid" ]]; then
+    # Update log paths in squid.conf for non-default prefix (e.g. Apple Silicon)
     sed -i '' "s|/usr/local/var/log/squid|$LOG_DIR|g" "$SQUID_CONF_DIR/squid.conf"
 fi
 mkdir -p "$LOG_DIR"
 
 # Initialize cache
-squid -z 2>/dev/null || true
+"$(brew --prefix)/sbin/squid" -z 2>/dev/null || true
 
 echo ""
 echo "=== Installation Complete ==="
