@@ -13,5 +13,9 @@
 # Project specific
 .maple_config
 proxy.pac
+.pac_server.pid
 *.log
 tmp/
+
+# Cache
+client/__pycache__

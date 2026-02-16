@@ -56,6 +56,28 @@ echo "Config saved."
 echo ""
 bash "$SCRIPT_DIR/generate_pac.sh"
 
+# Start PAC HTTP server (file:// URLs don't work with sandboxed apps)
+PAC_PORT=8053
+echo ""
+echo "Starting PAC server on port ${PAC_PORT}..."
+PID_FILE="$SCRIPT_DIR/.pac_server.pid"
+
+# Stop existing server if running
+if [[ -f "$PID_FILE" ]]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
+fi
+
+MAPLE_PAC_PORT="$PAC_PORT" nohup python3 "$SCRIPT_DIR/pac_server.py" > /dev/null 2>&1 &
+echo $! > "$PID_FILE"
+sleep 0.5
+
+if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "PAC server running on http://127.0.0.1:${PAC_PORT}/proxy.pac"
+else
+    echo "WARNING: PAC server failed to start."
+fi
+
 # Configure macOS proxy settings
 echo ""
 echo "Configuring macOS proxy settings..."
@@ -75,10 +97,10 @@ if [[ -z "$ACTIVE_SERVICE" ]]; then
     echo "WARNING: Could not detect active network."
     echo "You may need to set proxy manually:"
     echo "  System Settings > Network > [Your Network] > Proxies"
-    echo "  Set auto proxy config URL to: file://$SCRIPT_DIR/proxy.pac"
+    echo "  Set auto proxy config URL to: http://127.0.0.1:${PAC_PORT}/proxy.pac"
 else
     echo "Active network: $ACTIVE_SERVICE"
-    networksetup -setautoproxyurl "$ACTIVE_SERVICE" "file://$SCRIPT_DIR/proxy.pac"
+    networksetup -setautoproxyurl "$ACTIVE_SERVICE" "http://127.0.0.1:${PAC_PORT}/proxy.pac"
     networksetup -setautoproxystate "$ACTIVE_SERVICE" on
     echo "Auto proxy configured for '$ACTIVE_SERVICE'"
 fi

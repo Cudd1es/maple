@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/.maple_config"
+PAC_PORT=8053
 
 # Colors
 RED='\033[0;31m'
@@ -59,6 +60,43 @@ get_active_service() {
     done < <(networksetup -listallnetworkservices)
 }
 
+# PAC server management
+start_pac_server() {
+    local pid_file="$SCRIPT_DIR/.pac_server.pid"
+
+    # Check if already running
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        rm -f "$pid_file"
+    fi
+
+    # Start PAC server in background
+    MAPLE_PAC_PORT="$PAC_PORT" nohup python3 "$SCRIPT_DIR/pac_server.py" > /dev/null 2>&1 &
+    echo $! > "$pid_file"
+
+    # Verify it started
+    sleep 0.5
+    if ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+        echo -e "${RED}ERROR: Failed to start PAC server.${NC}"
+        rm -f "$pid_file"
+        return 1
+    fi
+}
+
+stop_pac_server() {
+    local pid_file="$SCRIPT_DIR/.pac_server.pid"
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file")
+        kill "$pid" 2>/dev/null || true
+        rm -f "$pid_file"
+    fi
+}
+
 cmd_global() {
     check_config
     bash "$SCRIPT_DIR/global_on.sh"
@@ -71,16 +109,24 @@ cmd_split() {
     echo "Switching to split mode..."
     sudo tailscale set --exit-node=
 
-    # Ensure PAC auto-proxy is enabled
+    # Start PAC server
+    start_pac_server
+
+    # Configure auto-proxy via local HTTP server
+    # (file:// URLs don't work with macOS sandboxed apps like Safari)
     local active_service
     active_service=$(get_active_service)
     if [[ -n "${active_service:-}" ]]; then
-        networksetup -setautoproxyurl "$active_service" "file://$SCRIPT_DIR/proxy.pac"
+        # Remove explicit proxy if previously set
+        networksetup -setwebproxystate "$active_service" off
+        networksetup -setsecurewebproxystate "$active_service" off
+        # Enable auto-proxy via local HTTP server
+        networksetup -setautoproxyurl "$active_service" "http://127.0.0.1:${PAC_PORT}/proxy.pac"
         networksetup -setautoproxystate "$active_service" on
         echo -e "${GREEN}Split mode ON.${NC} Only domains.txt traffic goes through server."
     else
         echo -e "${YELLOW}WARNING: Could not detect active network service.${NC}"
-        echo "Set auto-proxy URL manually: file://$SCRIPT_DIR/proxy.pac"
+        echo "Set auto-proxy URL manually: http://127.0.0.1:${PAC_PORT}/proxy.pac"
     fi
 }
 
@@ -89,16 +135,21 @@ cmd_off() {
     echo "Disabling all proxying..."
     sudo tailscale set --exit-node=
 
-    # Disable PAC auto-proxy
+    # Disable all proxy settings
     local active_service
     active_service=$(get_active_service)
     if [[ -n "${active_service:-}" ]]; then
         networksetup -setautoproxystate "$active_service" off
+        networksetup -setwebproxystate "$active_service" off
+        networksetup -setsecurewebproxystate "$active_service" off
         echo -e "${GREEN}Proxy OFF.${NC} All traffic is now direct."
     else
         echo -e "${YELLOW}WARNING: Could not detect active network service.${NC}"
         echo "Disable auto-proxy manually in System Settings > Network > Proxies."
     fi
+
+    # Stop PAC server
+    stop_pac_server
 }
 
 cmd_add() {
@@ -177,10 +228,12 @@ cmd_status() {
     local mode_desc="all traffic direct"
 
     if command -v tailscale &>/dev/null; then
-        local ts_status
-        ts_status=$(tailscale status 2>/dev/null || echo "")
+        # Use JSON output to reliably detect exit node usage
+        # "ExitNode":true only appears when we are ACTIVELY using an exit node
+        local ts_json
+        ts_json=$(tailscale status --json 2>/dev/null || echo "{}")
 
-        if echo "$ts_status" | grep -q "exit node"; then
+        if echo "$ts_json" | grep -q '"ExitNode":true'; then
             mode="GLOBAL"
             mode_color="$GREEN"
             mode_desc="all traffic via server"
