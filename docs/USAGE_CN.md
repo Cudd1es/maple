@@ -12,7 +12,7 @@ Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squ
 ```
 
 - **全局模式**（global）：所有应用的所有流量通过服务端转发（使用 Tailscale 出口节点）
-- **分流模式**（split，默认）：只有 domains.txt 配置的域名通过服务端转发（仅浏览器，PAC 文件控制）
+- **分流模式**（split，默认）：只有 domains.txt 配置的域名通过服务端转发（浏览器通过本地 HTTP 服务器读取 PAC 文件）
 - **关闭**（off）：禁用所有代理，所有流量直连
 
 ## 前置要求
@@ -21,6 +21,7 @@ Maple 通过 [Tailscale](https://tailscale.com) 隧道和 [Squid](http://www.squ
 - macOS
 - 安装并连接 [Tailscale](https://tailscale.com/download)
 - 安装 [Homebrew](https://brew.sh)
+- Python 3 (macOS 内置)
 
 ## 安装
 

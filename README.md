@@ -14,13 +14,15 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 ```
 Client  ----Tailscale----->  Server  ----->  Internet
   |                            |
+  |                            |
   |-- PAC split routing        |-- Squid proxy (:3128)
+  |   (via local HTTP server)  |
   |-- Global mode              |-- Tailscale Exit Node
 ```
 
 **Three modes:**
 - **Global mode**: All traffic goes through the server (for Zoom/Teams/API calls)
-- **Split mode** (default): Only configured domains go through the server (browser only)
+- **Split mode** (default): Only configured domains go through the server (served via local PAC server)
 - **Off**: All proxying disabled, direct connection restored
 
 ## Quick Start

@@ -8,6 +8,7 @@ Maple routes your internet traffic through a remote server using [Tailscale](htt
 Client  ----Tailscale----->  Server  ----->  Internet
   |                            |
   |-- PAC split routing        |-- Squid proxy (:3128)
+  |   (via local HTTP server)  |
   |-- Global mode              |-- Tailscale Exit Node
 ```
 
@@ -21,6 +22,7 @@ Both machines need:
 - macOS
 - [Tailscale](https://tailscale.com/download) installed and connected
 - [Homebrew](https://brew.sh) installed
+- Python 3 (built-in on macOS)
 
 ## Setup
 
